@@ -2,7 +2,8 @@
   "general_config": {
     "source_video": "video.mp4",
     "distance_between_centers": 110,
-    "apply_blur": true
+    "apply_blur": true,
+    "cascades_dir": "cascades/"
   },
   "cascades_config": [
     {
