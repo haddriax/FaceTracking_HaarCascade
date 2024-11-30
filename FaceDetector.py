@@ -5,7 +5,6 @@ import json
 import logging
 
 import numpy as np
-from pandas.io.xml import preprocess_data
 
 
 class FaceDetector:
@@ -67,6 +66,12 @@ class FaceDetector:
         self.logger.info(f"Successfully initialized FaceDetector.")
 
     def _load_video(self):
+        """
+        Load the video from the path in the config file and store it into to the self.source_video.
+        Attempt loading using cv2.VideoCapture.
+        Raises:
+            ValueError: If the video file cannot be opened.
+        """
         self.source_video = cv2.VideoCapture(self.general_config["source_video"])
         if not self.source_video.isOpened():
             raise ValueError(f"Could not open video file: {self.general_config['source_video']}")
@@ -136,6 +141,16 @@ class FaceDetector:
         return preprocessed_frame
 
     def _detect_on_frame(self, frame_gray: np.ndarray) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Apply all the enabled Haar cascade(s) on the given frame and return all the detections.
+        Args:
+            frame_gray (np.ndarray): The frame ready to be used for the detection - expect to be grayscale
+        Returns:
+            Dict[str, List[Dict[str, Any]]]: A dictionary with
+                - Key: The name of the cascade
+                - Value: a List (each entry being a detection on the frame)
+                           containing dictionary with the detection data (detections, reject_levels, weights)
+        """
         detections_by_cascades_frame: Dict[str, List[Dict[str, Any]]] \
             = { config["name"]: [] for config in self.cascades_config }
 
@@ -156,26 +171,6 @@ class FaceDetector:
             })
         return detections_by_cascades_frame
 
-        pass
-        for config in self.cascades_config:
-            if config["enabled"]:
-                detections, reject_levels, level_weights = self._detect_faces(
-                    self.cascade[config["name"]],
-                    frame_gray,
-                    config["scale_factor"],
-                    config["min_neighbors"],
-                    tuple(config["min_size"])
-                )
-
-                detections_by_cascades_frame[config["name"]].append(
-                {
-                    "detections": detections.tolist() if len(detections) > 0 else [],
-                    "reject_levels": list(reject_levels) if reject_levels is not None else [],
-                    "weights": list(level_weights) if level_weights is not None else []
-                })
-
-        return detections_by_cascades_frame
-
 
     def _detect_faces(self,
                       cascade: cv2.CascadeClassifier,
@@ -183,8 +178,19 @@ class FaceDetector:
                       scale_factor: float,
                       min_neighbors: int,
                       min_size: Tuple[int, int]):
+        """
+        Apply a CascadeClassifier on the given grayscale frame and run the detection.
+        Args:
+            cascade (cv2.CascadeClassifier): Haar cascade to use for the detection.
+            frame_gray (np.ndarray): Grayscale to perform the detection on.
+            scale_factor (float): scale_factor parameter for detectMultiScale3 (cf. doc) - tldr. More = + results
+            min_neighbors (int): min_neighbors parameter for detectMultiScale3 (cf. doc) - tldr. More = + accurate
+            min_size (Tuple[int, int]): Minimum object size to try to detect.
+        Returns:
+            detections, reject_levels, level_weights
+        """
         try:
-            faces, reject_levels, level_weights = cascade.detectMultiScale3(
+            detections, reject_levels, level_weights = cascade.detectMultiScale3(
                 frame_gray,
                 scaleFactor=scale_factor,
                 minNeighbors=min_neighbors,
@@ -194,13 +200,13 @@ class FaceDetector:
         except cv2.error as e:
             self.logger.error(f"Error with detectMultiScale3: {e}")
             # Return a default multiscale.
-            faces, reject_levels, level_weights = cascade.detectMultiScale(
+            detections, reject_levels, level_weights = cascade.detectMultiScale(
                 frame_gray,
                 scaleFactor=scale_factor,
                 minNeighbors=min_neighbors,
                 minSize=min_size
             ), None, None
-        return faces, reject_levels, level_weights
+        return detections, reject_levels, level_weights
 
     def _load_detections(self):
         """
@@ -213,6 +219,9 @@ class FaceDetector:
             return False
 
     def run(self):
+        """
+        Start the loading/init/detection process.
+        """
         if not self._load_detections():
             self._prepare_cascades()
             self._detect_on_video()
