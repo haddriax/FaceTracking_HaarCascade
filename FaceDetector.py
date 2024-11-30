@@ -1,4 +1,5 @@
-from typing import List, Dict, Any, Tuple
+import os
+from typing import List, Dict, Any, Tuple, Sequence
 
 import cv2
 import json
@@ -22,7 +23,8 @@ class FaceDetector:
         frame_height (int): The height of each video frame in pixels.
         all_detections_by_cascades (List[Dict[str, Any]]): All the [x, y, w, h] detected per cascade for each frame.
     """
-    def __init__(self, config_file: str, detection_file: str | None = None ):
+
+    def __init__(self, config_file: str, detection_file: str | None = None):
         """
         Initializes the FaceDetector class.
 
@@ -67,7 +69,6 @@ class FaceDetector:
             self.logger.error(f"{e}. Exiting program.")
             exit(1)
 
-
         self._get_video_info()
 
         self.logger.info(f"Successfully initialized FaceDetector.")
@@ -87,30 +88,31 @@ class FaceDetector:
         """
         Retrieves and sets video information such as frame rate, total frames, width, and height.
         """
-        self.frame_rate   = int(self.source_video.get(cv2.CAP_PROP_FPS))
-        self.frame_total  = int(self.source_video.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.frame_width  = int(self.source_video.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_rate = int(self.source_video.get(cv2.CAP_PROP_FPS))
+        self.frame_total = int(self.source_video.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.frame_width = int(self.source_video.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.frame_height = int(self.source_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
         assert self.frame_total > 0
-        self.logger.info(f"Video info: {self.frame_total} frames "
+        self.logger.info(f"Source video: '{self.general_config['source_video']}' {self.frame_total} frames "
                          f"{self.frame_width}x{self.frame_height}@{self.frame_rate}fps")
 
     def _prepare_cascades(self) -> dict[str: cv2.CascadeClassifier]:
         """
         Generate all the CascadeClassifier objects if they are activated in the config file
+
         Returns:
             dict[str: cv2.CascadeClassifier]  with the name of the cascade as key and classifier as value.
         """
         self.cascades = {
             config["name"]:
                 {
-                    "classifier": cv2.CascadeClassifier(self.general_config["cascades_dir"]+config["cascade_path"]),
+                    "classifier": cv2.CascadeClassifier(self.general_config["cascades_dir"] + config["cascade_path"]),
                     "scale_factor": config["scale_factor"],
                     "min_neighbors": config["min_neighbors"],
                     "min_size": config["min_size"]
                 }
-                for config in self.cascades_config if
-                config["enabled"]
+            for config in self.cascades_config if
+            config["enabled"]
         }
         self.logger.info(f"Loaded cascades: {[k for k in self.cascades.keys()]}")
         return self.cascades
@@ -132,8 +134,39 @@ class FaceDetector:
             frame = self._preprocess_frame(source_frame)
 
             frame_detections = self._detect_on_frame(frame)
-            self.logger.info(f"Detected: {frame_detections}")
+            # self.logger.debug(f"Detected: {frame_detections}")
             self.all_detections_by_cascades.append(frame_detections)
+
+        self._save_results_to_json()
+
+    def _save_results_to_json(self):
+        """
+        Serializes the detection data and saves it to a JSON file.
+        If the file exists, it is overwritten.
+        File name and path is set in the config file: output_json_dir and output_json_name
+
+        Raises:
+            FileNotFoundError: If the provided file path does not exist.
+            PermissionError: If the user does not have permission to write to the file.
+            json.JSONDecodeError: If there is an issue with serializing the data into JSON format.
+            Exception: For any other unexpected errors that may occur during the file handling or serialization process.
+        """
+        json_result_full_path:str = self.general_config["output_json_dir"]+self.general_config["output_json_name"]
+
+        try:
+            with open(json_result_full_path, "w") as json_file:
+                detections_data_serializable = self.convert_to_serializable(self.all_detections_by_cascades)
+                json.dump(detections_data_serializable, json_file, indent=4)
+        except FileNotFoundError:
+            self.logger.error(f"Error: The file path '{json_result_full_path}' does not exist.")
+        except PermissionError:
+            self.logger.error(f"Error: You do not have permission to write to '{json_result_full_path}'.")
+        except json.JSONDecodeError:
+            self.logger.error("Error: Failed to serialize results to JSON.")
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred: {e}")
+        else:
+            self.logger.info(f"Saved results into {json_result_full_path}.")
 
 
     def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
@@ -150,8 +183,10 @@ class FaceDetector:
     def _detect_on_frame(self, frame_gray: np.ndarray) -> Dict[str, List[Dict[str, Any]]]:
         """
         Apply all the enabled Haar cascade(s) on the given frame and return all the detections.
+
         Args:
             frame_gray (np.ndarray): The frame ready to be used for the detection - expect to be grayscale
+
         Returns:
             Dict[str, List[Dict[str, Any]]]: A dictionary with
                 - Key: The name of the cascade
@@ -159,7 +194,7 @@ class FaceDetector:
                            containing dictionary with the detection data (detections, reject_levels, weights)
         """
         detections_by_cascades_frame: Dict[str, List[Dict[str, Any]]] \
-            = { config["name"]: [] for config in self.cascades_config }
+            = {config["name"]: [] for config in self.cascades_config}
 
         for name, cascade in self.cascades.items():
             detections, reject_levels, level_weights = self._detect_faces(
@@ -171,13 +206,12 @@ class FaceDetector:
             )
 
             detections_by_cascades_frame[name].append(
-            {
-                "detections": detections.tolist() if len(detections) > 0 else [],
-                "reject_levels": list(reject_levels) if reject_levels is not None else [],
-                "weights": list(level_weights) if level_weights is not None else []
-            })
+                {
+                    "detections": detections.tolist() if len(detections) > 0 else [],
+                    "reject_levels": list(reject_levels) if reject_levels is not None else [],
+                    "weights": list(level_weights) if level_weights is not None else []
+                })
         return detections_by_cascades_frame
-
 
     def _detect_faces(self,
                       cascade: cv2.CascadeClassifier,
@@ -187,12 +221,14 @@ class FaceDetector:
                       min_size: Tuple[int, int]):
         """
         Apply a CascadeClassifier on the given grayscale frame and run the detection.
+
         Args:
             cascade (cv2.CascadeClassifier): Haar cascade to use for the detection.
             frame_gray (np.ndarray): Grayscale to perform the detection on.
             scale_factor (float): scale_factor parameter for detectMultiScale3 (cf. doc) - tldr. More = + results
             min_neighbors (int): min_neighbors parameter for detectMultiScale3 (cf. doc) - tldr. More = + accurate
             min_size (Tuple[int, int]): Minimum object size to try to detect.
+
         Returns:
             detections, reject_levels, level_weights
         """
@@ -218,12 +254,37 @@ class FaceDetector:
     def _load_detections(self):
         """
         Load the matching detection file if it exists, and set it into self.detections_by_cascades.
+
         Returns:
             bool: True if the loading succeeded, False otherwise.
         """
-        # @todo: Loading from file
-        if self.all_detections_by_cascades is None:
-            return False
+        json_result_full_path:str = self.general_config["output_json_dir"]+self.general_config["output_json_name"]
+        if os.path.exists(json_result_full_path):
+            self.logger.info(f"Results file '{json_result_full_path}' already exists. Loading results from file.")
+            try:
+                with open(json_result_full_path, "r") as json_file:
+                    self.all_detections_by_cascades = json.load(json_file)
+                    return True
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Error: JSON results format is invalid. Change file or fix format. {e}."
+                                  f" Exiting program.")
+                exit(1)
+        else:
+            self.logger.info(f"No results file existing at '{json_result_full_path}'. Performing detection.")
+
+    def convert_to_serializable(self, obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {key: self.convert_to_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self.convert_to_serializable(element) for element in obj]
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj
 
     def run(self):
         """
