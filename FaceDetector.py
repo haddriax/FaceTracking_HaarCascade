@@ -5,6 +5,7 @@ import json
 import logging
 
 import numpy as np
+from pandas.io.xml import preprocess_data
 
 
 class FaceDetector:
@@ -20,7 +21,7 @@ class FaceDetector:
         frame_total (int): The total number of frames in the source video.
         frame_width (int): The width of each video frame in pixels.
         frame_height (int): The height of each video frame in pixels.
-        detections_by_cascades (Dict[str, List[Dict[str, Any]]]): All the [x, y, w, h] detected per cascade for each frame.
+        all_detections_by_cascades (List[Dict[str, Any]]): All the [x, y, w, h] detected per cascade for each frame.
     """
     def __init__(self, config_file: str, detection_file: str | None = None ):
         """
@@ -38,8 +39,8 @@ class FaceDetector:
         self.frame_total: int = 0
         self.frame_width: int = 0
         self.frame_height: int = 0
-        self.detections_by_cascades: Dict[str, List[Dict[str, Any]]] | None = None
-        self.cascade: List[cv2.CascadeClassifier] = []
+        self.all_detections_by_cascades: List[Dict[str, Any]] | None = None
+        self.cascades: Dict[str: Dict[str: cv2.CascadeClassifier, str, str, str]] = {}
         self.logger: logging.Logger = logging.getLogger(self.__class__.__name__)
 
         self.logger.setLevel(level=logging.INFO)
@@ -89,7 +90,13 @@ class FaceDetector:
             dict[str: cv2.CascadeClassifier]: A dict with the name of the cascade as key and classifier as value.
         """
         self.cascades = {
-            config["name"]: cv2.CascadeClassifier(self.general_config["cascades_dir"]+config["cascade_path"])
+            config["name"]:
+                {
+                    "classifier": cv2.CascadeClassifier(self.general_config["cascades_dir"]+config["cascade_path"]),
+                    "scale_factor": config["scale_factor"],
+                    "min_neighbors": config["min_neighbors"],
+                    "min_size": config["min_size"]
+                }
                 for config in self.cascades_config if
                 config["enabled"]
         }
@@ -101,19 +108,56 @@ class FaceDetector:
         Run the full detection on every frame with all enabled Haar cascades on the video.
         """
         self.logger.info(f"Starting Haar cascade detection...")
+
+        self.all_detections_by_cascades = []
+
         for i in range(self.frame_total):
-            ret, frame = self.source_video.read()
+            ret, source_frame = self.source_video.read()
             self.logger.debug(f"Processing frame {i + 1}/{self.frame_total}.")
-            if frame is None or not ret:
+            if source_frame is None or not ret:
                 break
 
-            # Process the frame into grayscale to run Haar cascade.
-            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            if np.mean(frame_gray) < 50:
-                frame_gray = cv2.equalizeHist(frame_gray)
+            frame = self._preprocess_frame(source_frame)
 
-    def _detect_on_frame(self, frame_gray: np.ndarray):
-        for config in self.cascades:
+            frame_detections = self._detect_on_frame(frame)
+            self.logger.info(f"Detected: {frame_detections}")
+            self.all_detections_by_cascades.append(frame_detections)
+
+
+    def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Process the frame into grayscale to run Haar cascade.
+        Apply a histogram equalization if the contrast is too low.
+        """
+        preprocessed_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if np.mean(preprocessed_frame) < 50:
+            preprocessed_frame = cv2.equalizeHist(preprocessed_frame)
+
+        return preprocessed_frame
+
+    def _detect_on_frame(self, frame_gray: np.ndarray) -> Dict[str, List[Dict[str, Any]]]:
+        detections_by_cascades_frame: Dict[str, List[Dict[str, Any]]] \
+            = { config["name"]: [] for config in self.cascades_config }
+
+        for name, cascade in self.cascades.items():
+            detections, reject_levels, level_weights = self._detect_faces(
+                cascade['classifier'],
+                frame_gray,
+                cascade["scale_factor"],
+                cascade["min_neighbors"],
+                tuple(cascade["min_size"])
+            )
+
+            detections_by_cascades_frame[name].append(
+            {
+                "detections": detections.tolist() if len(detections) > 0 else [],
+                "reject_levels": list(reject_levels) if reject_levels is not None else [],
+                "weights": list(level_weights) if level_weights is not None else []
+            })
+        return detections_by_cascades_frame
+
+        pass
+        for config in self.cascades_config:
             if config["enabled"]:
                 detections, reject_levels, level_weights = self._detect_faces(
                     self.cascade[config["name"]],
@@ -122,11 +166,16 @@ class FaceDetector:
                     config["min_neighbors"],
                     tuple(config["min_size"])
                 )
-                self.detections_by_cascades[config["name"]].append({
+
+                detections_by_cascades_frame[config["name"]].append(
+                {
                     "detections": detections.tolist() if len(detections) > 0 else [],
                     "reject_levels": list(reject_levels) if reject_levels is not None else [],
                     "weights": list(level_weights) if level_weights is not None else []
                 })
+
+        return detections_by_cascades_frame
+
 
     def _detect_faces(self,
                       cascade: cv2.CascadeClassifier,
@@ -160,13 +209,14 @@ class FaceDetector:
             bool: True if the loading succeeded, False otherwise.
         """
         # @todo: Loading from file
-        if self.detections_by_cascades is None:
+        if self.all_detections_by_cascades is None:
             return False
 
     def run(self):
         if not self._load_detections():
             self._prepare_cascades()
             self._detect_on_video()
+            # Reset video to frame 0, so it's ready to be processed after detection.
             self.source_video.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
 
