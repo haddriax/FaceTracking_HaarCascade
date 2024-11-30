@@ -49,17 +49,24 @@ class FaceDetector:
         self.logger.addHandler(console_handler)
 
         try:
-            with open(config_file, "r") as f:
-                c = json.load(f)
-        except FileNotFoundError:
-            raise ValueError(f"Configuration file '{config_file}' not found.")
-        except json.JSONDecodeError:
-            raise ValueError(f"Configuration file '{config_file}' is not a valid JSON file.")
+            with open(config_file, "r") as file:
+                json_file = json.load(file)
+        except FileNotFoundError as e:
+            self.logger.error(f"{e}. Configuration file '{config_file}' not found. Exiting program.")
+            exit(1)
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Configuration file '{config_file}' is not a valid JSON file. {e}. Exiting program.")
+            exit(1)
 
-        self.cascades_config = c["cascades_config"]
-        self.general_config = c["general_config"]
+        self.cascades_config = json_file["cascades_config"]
+        self.general_config = json_file["general_config"]
 
-        self._load_video()
+        try:
+            self._load_video()
+        except ValueError as e:
+            self.logger.error(f"{e}. Exiting program.")
+            exit(1)
+
 
         self._get_video_info()
 
@@ -92,7 +99,7 @@ class FaceDetector:
         """
         Generate all the CascadeClassifier objects if they are activated in the config file
         Returns:
-            dict[str: cv2.CascadeClassifier]: A dict with the name of the cascade as key and classifier as value.
+            dict[str: cv2.CascadeClassifier]  with the name of the cascade as key and classifier as value.
         """
         self.cascades = {
             config["name"]:
