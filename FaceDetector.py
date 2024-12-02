@@ -7,6 +7,8 @@ import logging
 
 import numpy as np
 
+from FaceTracker import FaceTracker
+
 
 class FaceDetector:
     """
@@ -101,7 +103,7 @@ class FaceDetector:
         Generate all the CascadeClassifier objects if they are activated in the config file
 
         Returns:
-            dict[str: cv2.CascadeClassifier]  with the name of the cascade as key and classifier as value.
+            dict[str: cv2.CascadeClassifier] with the name of the cascade as key and classifier as value.
         """
         self.cascades = {
             config["name"]:
@@ -117,13 +119,81 @@ class FaceDetector:
         self.logger.info(f"Loaded cascades: {[k for k in self.cascades.keys()]}")
         return self.cascades
 
+    def _process_detections_frame(self, frame_detections) -> List[Dict]:
+        """
+        Given the detection dictionary containing the detections form one frame.
+        - Remove the detections that don't match the threshold specified in the config file, by cascade.
+        - Merge the detections that are too close to each other, regardless of the cascade it comes from.
+        Args:
+            frame_detections (Dict): A Dict with cascade name as keys and a List of detections (Dict)
+        Returns:
+            A list of filtered detections, now unrelated to cascades.
+        """
+        # Remove detection if under the desired weight
+        filtered_detections = self._filter_by_weight_frame(frame_detections)
+        # Merge detection if their coordinates are too close, based on cascade thresholds.
+        filtered_detections = self._filter_centers_frame(frame_detections)
+        return filtered_detections
+
+    def _process_video_frame(self, source_frame, frame_detections, face_tracker):
+        # Step 1: Filter and merge detections
+        filtered_detections = self._process_detections_frame(frame_detections)
+
+        # Extract bounding boxes for tracker
+        detections = [detection["detections"] for detection in filtered_detections]
+
+        # Step 2: Update tracker with filtered detections
+        tracked_faces = face_tracker.update(detections)
+
+        # Step 3: Blur detected regions
+        blur_zones = [{"detections": track_data["bbox"]} for track_data in tracked_faces.values()]
+        blurred_frame = self._blur_frame(source_frame, blur_zones)
+
+        #detections = []
+        #for cascade_name, cascade_results in frame_detections.items():
+         #   for detection_entry in cascade_results:
+          #      detections.extend(detection_entry["detections"])
+
+        #tracked_faces = face_tracker.update(detections)
+
+        #blur_zones = [{"detections": track_data["bbox"]} for track_data in tracked_faces.values()]
+        #blurred_frame = self._blur_frame(source_frame, blur_zones)
+
+        blurred_frame = self._display_track_path(blurred_frame, tracked_faces, face_tracker)
+        return blurred_frame
+
+    def _display_track_path(self, frame, tracked_faces, face_tracker: FaceTracker):
+        """
+        Compute and show the track path on the video.
+        """
+        for track_id, track_data in tracked_faces.items():
+            x, y, w, h = track_data["bbox"]
+            center = (x + w // 2, y + h // 2)
+
+            tp = face_tracker.tracking_paths
+
+            # Update or initialize the tracking path
+            if track_id not in tp:
+                tp[track_id] = []
+            tp[track_id].append(center)
+            for j in range(1, len(tp[track_id])):
+                if tp[track_id][j - 1] and tp[track_id][j]:
+                    cv2.line(frame, tp[track_id][j - 1], tp[track_id][j], (0, 255, 0), 2)
+        return frame
+
     def _detect_on_video(self):
         """
-        Run the full detection on every frame with all enabled Haar cascades on the video.
+        Run detection and tracking on every frame using Haar cascades.
+        Blurs specified regions and tracks faces with movement visualization.
         """
-        self.logger.info(f"Starting Haar cascade detection...")
+        self.logger.info(f"Starting Haar cascade detection, tracking, and movement visualization...")
 
-        self.all_detections_by_cascades = []
+        # @todo should be in config file.
+        face_tracker = FaceTracker(max_before_untrack=75, distance_threshold=70)
+
+        output_path = self.general_config.get("output_video_path", "output_tracked_video.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        output_video = cv2.VideoWriter(output_path, fourcc, self.frame_rate, (self.frame_width, self.frame_height))
 
         for i in range(self.frame_total):
             ret, source_frame = self.source_video.read()
@@ -131,19 +201,19 @@ class FaceDetector:
             if source_frame is None or not ret:
                 break
 
-            frame = self._preprocess_frame(source_frame)
+            frame_gray = self._preprocess_frame(source_frame)
+            frame_detections = self._detect_on_frame(frame_gray)
+            processed_frame = self._process_video_frame(source_frame, frame_detections, face_tracker)
+            output_video.write(processed_frame)
 
-            frame_detections = self._detect_on_frame(frame)
-            # self.logger.debug(f"Detected: {frame_detections}")
-            self.all_detections_by_cascades.append(frame_detections)
-
-        self._save_results_to_json()
+        output_video.release()
+        self.logger.info(f"Finished processing video. Output saved to {output_path}.")
 
     def _save_results_to_json(self):
         """
         Serializes the detection data and saves it to a JSON file.
         If the file exists, it is overwritten.
-        File name and path is set in the config file: output_json_dir and output_json_name
+        File name and path are set in the config file: output_json_dir and output_json_name
 
         Raises:
             FileNotFoundError: If the provided file path does not exist.
@@ -151,7 +221,7 @@ class FaceDetector:
             json.JSONDecodeError: If there is an issue with serializing the data into JSON format.
             Exception: For any other unexpected errors that may occur during the file handling or serialization process.
         """
-        json_result_full_path:str = self.general_config["output_json_dir"]+self.general_config["output_json_name"]
+        json_result_full_path: str = self.general_config["output_json_dir"]+self.general_config["output_json_name"]
 
         try:
             with open(json_result_full_path, "w") as json_file:
@@ -168,16 +238,14 @@ class FaceDetector:
         else:
             self.logger.info(f"Saved results into {json_result_full_path}.")
 
-
     def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
         """
         Process the frame into grayscale to run Haar cascade.
-        Apply a histogram equalization if the contrast is too low.
+        Apply histogram equalization if the contrast is too low.
         """
         preprocessed_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if np.mean(preprocessed_frame) < 50:
             preprocessed_frame = cv2.equalizeHist(preprocessed_frame)
-
         return preprocessed_frame
 
     def _detect_on_frame(self, frame_gray: np.ndarray) -> Dict[str, List[Dict[str, Any]]]:
@@ -185,12 +253,12 @@ class FaceDetector:
         Apply all the enabled Haar cascade(s) on the given frame and return all the detections.
 
         Args:
-            frame_gray (np.ndarray): The frame ready to be used for the detection - expect to be grayscale
+            frame_gray (np.ndarray): The frame ready to be used for detection - expected to be grayscale
 
         Returns:
             Dict[str, List[Dict[str, Any]]]: A dictionary with
                 - Key: The name of the cascade
-                - Value: a List (each entry being a detection on the frame)
+                - Value: a List (each entry being a detection done on the frame)
                            containing dictionary with the detection data (detections, reject_levels, weights)
         """
         detections_by_cascades_frame: Dict[str, List[Dict[str, Any]]] \
@@ -232,6 +300,9 @@ class FaceDetector:
         Returns:
             detections, reject_levels, level_weights
         """
+        assert len(frame_gray) > 0
+        assert scale_factor > 0
+        assert min_neighbors > 0
         try:
             detections, reject_levels, level_weights = cascade.detectMultiScale3(
                 frame_gray,
@@ -242,13 +313,7 @@ class FaceDetector:
             )
         except cv2.error as e:
             self.logger.error(f"Error with detectMultiScale3: {e}")
-            # Return a default multiscale.
-            detections, reject_levels, level_weights = cascade.detectMultiScale(
-                frame_gray,
-                scaleFactor=scale_factor,
-                minNeighbors=min_neighbors,
-                minSize=min_size
-            ), None, None
+            exit(1)
         return detections, reject_levels, level_weights
 
     def _load_detections(self):
@@ -258,7 +323,7 @@ class FaceDetector:
         Returns:
             bool: True if the loading succeeded, False otherwise.
         """
-        json_result_full_path:str = self.general_config["output_json_dir"]+self.general_config["output_json_name"]
+        json_result_full_path: str = self.general_config["output_json_dir"]+self.general_config["output_json_name"]
         if os.path.exists(json_result_full_path):
             self.logger.info(f"Results file '{json_result_full_path}' already exists. Loading results from file.")
             try:
@@ -286,6 +351,79 @@ class FaceDetector:
         else:
             return obj
 
+    def _filter_by_weight_frame(self, detections_frame: Dict):
+        """
+        Read the list of detection by cascade, remove the one that doesn't match the threshold and return the new list.
+        """
+        filtered_results = {}
+        for cascade_name, detections in detections_frame.items():
+            weight_threshold = next(
+                config["confidence_threshold"] for config in self.cascades_config if config["name"] == cascade_name
+            )
+            filtered_results[cascade_name] = [
+                detection for detection in detections
+                if detection["weights"] and max(detection["weights"]) >= weight_threshold
+            ]
+        return filtered_results
+
+    def _filter_centers_frame(self, detections: Dict) -> List[Dict]:
+        """
+        Merge all detections closer than a specified distance threshold.
+        @AI generated method
+
+        Args:
+            detections (Dict): Detections grouped by cascade names.
+
+        Returns:
+            List[Dict]: A list of merged detections.
+        """
+        distance_threshold = self.general_config.get("distance_between_centers", 100)
+        merged_detections = []
+
+        # Not ideal to use 3 loops. Look for optimization?
+        for cascade_name, cascade_detections in detections.items():
+            for detection_entry in cascade_detections:
+                for bounding_box in detection_entry["detections"]:
+                    x, y, w, h = bounding_box
+                    center = (x + w // 2, y + h // 2)
+
+                    is_merged = False
+                    for merged in merged_detections:
+                        mx, my, mw, mh = merged["detections"]
+                        merged_center = (mx + mw // 2, my + mh // 2)
+                        distance = np.sqrt((center[0] - merged_center[0])**2 + (center[1] - merged_center[1])**2)
+
+                        if distance < distance_threshold:
+                            # Merge detections by expanding the bounding box
+                            merged["detections"] = [
+                                min(x, mx),
+                                min(y, my),
+                                max(x + w, mx + mw) - min(x, mx),
+                                max(y + h, my + mh) - min(y, my)
+                            ]
+                            is_merged = True
+                            break
+
+                    if not is_merged:
+                        merged_detections.append({"detections": [x, y, w, h]})
+
+        return merged_detections
+
+    def _blur_frame(self, frame, blur_zones: List[Dict]) -> np.ndarray:
+        """
+        Blur the frame based on the List in parameters.
+
+        Args:
+            frame (np.ndarray): frame to blur
+            blur_zones (List[Dict]): list of the detections that should be blurred.
+        """
+        for zone in blur_zones:
+            x, y, w, h = zone["detections"]
+            roi = frame[y:y+h, x:x+w]
+            blurred_roi = cv2.GaussianBlur(roi, (51, 51), 30)
+            frame[y:y+h, x:x+w] = blurred_roi
+        return frame
+
     def run(self):
         """
         Start the loading/init/detection process.
@@ -295,8 +433,11 @@ class FaceDetector:
             self._detect_on_video()
             # Reset video to frame 0, so it's ready to be processed after detection.
             self.source_video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        else:
+            self._detect_on_video()
 
 
 if __name__ == '__main__':
-    f = FaceDetector(config_file="config.json")
+    f = FaceDetector(config_file="config2.json")
     f.run()
+    # @todo Better separation of detection/saving results and video process.

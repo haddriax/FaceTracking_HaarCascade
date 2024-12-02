@@ -1,0 +1,56 @@
+{
+  "general_config": {
+    "source_video": "video.mp4",
+    "distance_between_centers": 110,
+    "apply_blur": true,
+    "cascades_dir": "cascades/",
+    "output_json_dir": "output/",
+    "output_json_name": "output.json"
+  },
+  "cascades_config": [
+    {
+      "name": "frontalface_default",
+      "enabled": false,
+      "draw": false,
+      "color": [255, 0, 0],
+      "cascade_path": "haarcascade_frontalface_default.xml",
+      "scale_factor": 1.06,
+      "min_neighbors": 28,
+      "min_size": [220, 220],
+      "confidence_threshold": 2
+    },
+    {
+      "name": "frontalface_alt",
+      "enabled": true,
+      "draw": false,
+      "color": [0, 255, 0],
+      "cascade_path": "haarcascade_frontalface_alt.xml",
+      "scale_factor": 1.06,
+      "min_neighbors": 16,
+      "min_size": [220, 220],
+      "confidence_threshold": 108.0
+    },
+    {
+      "name": "frontalface_alt2",
+      "enabled": true,
+      "draw": false,
+      "color": [0, 0, 255],
+      "cascade_path": "haarcascade_frontalface_alt2.xml",
+      "scale_factor": 1.06,
+      "min_neighbors": 18,
+      "min_size": [220, 220],
+      "confidence_threshold": 55.2
+    },
+    {
+      "name": "profileface",
+      "enabled": true,
+      "draw": false,
+      "color": [255, 0, 255],
+      "cascade_path": "haarcascade_profileface.xml",
+      "scale_factor": 1.06,
+      "min_neighbors": 28,
+      "min_size": [220, 220],
+      "confidence_threshold": 2.2
+    }
+  ]
+}
